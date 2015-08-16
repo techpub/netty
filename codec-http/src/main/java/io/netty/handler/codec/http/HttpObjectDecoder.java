@@ -27,6 +27,7 @@ import io.netty.util.ByteProcessor;
 import io.netty.util.internal.AppendableCharSequence;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Decodes {@link ByteBuf}s into {@link HttpMessage}s and
@@ -104,9 +105,14 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
 
     private final int maxChunkSize;
     private final boolean chunkedSupported;
+
+    @Deprecated
     protected final boolean validateHeaders;
+
     private final HeaderParser headerParser;
     private final LineParser lineParser;
+
+    private final HttpRequestFactory foo;
 
     private HttpMessage message;
     private long chunkSize;
@@ -163,19 +169,29 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
             int maxInitialLineLength, int maxHeaderSize, int maxChunkSize,
             boolean chunkedSupported, boolean validateHeaders) {
 
+        this(new DefaultHttpRequestFactory(validateHeaders), maxInitialLineLength,
+            maxHeaderSize, maxChunkSize, chunkedSupported, validateHeaders);
+    }
+
+    protected HttpObjectDecoder(HttpRequestFactory foo,
+        int maxInitialLineLength, int maxHeaderSize, int maxChunkSize,
+        boolean chunkedSupported, boolean validateHeaders) {
+
+        this.foo = Objects.requireNonNull(foo);
+
         if (maxInitialLineLength <= 0) {
             throw new IllegalArgumentException(
-                    "maxInitialLineLength must be a positive integer: " +
-                     maxInitialLineLength);
+                "maxInitialLineLength must be a positive integer: " +
+                    maxInitialLineLength);
         }
         if (maxHeaderSize <= 0) {
             throw new IllegalArgumentException(
-                    "maxHeaderSize must be a positive integer: " +
+                "maxHeaderSize must be a positive integer: " +
                     maxHeaderSize);
         }
         if (maxChunkSize <= 0) {
             throw new IllegalArgumentException(
-                    "maxChunkSize must be a positive integer: " +
+                "maxChunkSize must be a positive integer: " +
                     maxChunkSize);
         }
         this.maxChunkSize = maxChunkSize;
@@ -184,6 +200,10 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
         AppendableCharSequence seq = new AppendableCharSequence(128);
         lineParser = new LineParser(seq, maxInitialLineLength);
         headerParser = new HeaderParser(seq, maxHeaderSize);
+    }
+
+    public HttpRequestFactory factory() {
+        return foo;
     }
 
     @Override
@@ -229,7 +249,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
                 // fast-path
                 // No content is expected.
                 out.add(message);
-                out.add(LastHttpContent.EMPTY_LAST_CONTENT);
+                out.add(foo.newEmptyLastHttpContent(ctx));
                 resetNow();
                 return;
             case READ_CHUNK_SIZE:
@@ -249,7 +269,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
                 long contentLength = contentLength();
                 if (contentLength == 0 || contentLength == -1 && isDecodingRequest()) {
                     out.add(message);
-                    out.add(LastHttpContent.EMPTY_LAST_CONTENT);
+                    out.add(foo.newEmptyLastHttpContent(ctx));
                     resetNow();
                     return;
                 }
@@ -276,7 +296,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
             int toRead = Math.min(buffer.readableBytes(), maxChunkSize);
             if (toRead > 0) {
                 ByteBuf content = buffer.readSlice(toRead).retain();
-                out.add(new DefaultHttpContent(content));
+                out.add(foo.newHttpContent(ctx, content));
             }
             return;
         }
@@ -302,10 +322,10 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
 
             if (chunkSize == 0) {
                 // Read all content.
-                out.add(new DefaultLastHttpContent(content, validateHeaders));
+                out.add(foo.newLastHttpContent(ctx, content));
                 resetNow();
             } else {
-                out.add(new DefaultHttpContent(content));
+                out.add(foo.newHttpContent(ctx, content));
             }
             return;
         }
@@ -327,7 +347,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
             currentState = State.READ_CHUNKED_CONTENT;
             // fall-through
         } catch (Exception e) {
-            out.add(invalidChunk(buffer, e));
+            out.add(invalidChunk(ctx, buffer, e));
             return;
         }
         case READ_CHUNKED_CONTENT: {
@@ -337,7 +357,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
             if (toRead == 0) {
                 return;
             }
-            HttpContent chunk = new DefaultHttpContent(buffer.readSlice(toRead).retain());
+            HttpContent chunk = foo.newHttpContent(ctx, buffer.readSlice(toRead).retain());
             chunkSize -= toRead;
 
             out.add(chunk);
@@ -362,7 +382,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
             return;
         }
         case READ_CHUNK_FOOTER: try {
-            LastHttpContent trailer = readTrailingHeaders(buffer);
+            LastHttpContent trailer = readTrailingHeaders(ctx, buffer);
             if (trailer == null) {
                 return;
             }
@@ -370,7 +390,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
             resetNow();
             return;
         } catch (Exception e) {
-            out.add(invalidChunk(buffer, e));
+            out.add(invalidChunk(ctx, buffer, e));
             return;
         }
         case BAD_MESSAGE: {
@@ -401,7 +421,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
             boolean chunked = HttpHeaderUtil.isTransferEncodingChunked(message);
             if (currentState == State.READ_VARIABLE_LENGTH_CONTENT && !in.isReadable() && !chunked) {
                 // End of connection.
-                out.add(LastHttpContent.EMPTY_LAST_CONTENT);
+                out.add(foo.newEmptyLastHttpContent(ctx));
                 reset();
                 return;
             }
@@ -419,7 +439,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
             resetNow();
 
             if (!prematureClosure) {
-                out.add(LastHttpContent.EMPTY_LAST_CONTENT);
+                out.add(foo.newEmptyLastHttpContent(ctx));
             }
         }
     }
@@ -505,14 +525,14 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
         return ret;
     }
 
-    private HttpContent invalidChunk(ByteBuf in, Exception cause) {
+    private HttpContent invalidChunk(ChannelHandlerContext ctx, ByteBuf in, Exception cause) {
         currentState = State.BAD_MESSAGE;
 
         // Advance the readerIndex so that ByteToMessageDecoder does not complain
         // when we produced an invalid message without consuming anything.
         in.skipBytes(in.readableBytes());
 
-        HttpContent chunk = new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER);
+        HttpContent chunk = foo.newLastHttpContent(ctx, Unpooled.EMPTY_BUFFER);
         chunk.setDecoderResult(DecoderResult.failure(cause));
         message = null;
         trailer = null;
@@ -596,7 +616,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
         return contentLength;
     }
 
-    private LastHttpContent readTrailingHeaders(ByteBuf buffer) {
+    private LastHttpContent readTrailingHeaders(ChannelHandlerContext ctx, ByteBuf buffer) {
         AppendableCharSequence line = headerParser.parse(buffer);
         if (line == null) {
             return null;
@@ -605,7 +625,7 @@ public abstract class HttpObjectDecoder extends ByteToMessageDecoder {
         if (line.length() > 0) {
             LastHttpContent trailer = this.trailer;
             if (trailer == null) {
-                trailer = this.trailer = new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER, validateHeaders);
+                trailer = this.trailer = foo.newLastHttpContent(ctx, Unpooled.EMPTY_BUFFER);
             }
             do {
                 char firstChar = line.charAt(0);

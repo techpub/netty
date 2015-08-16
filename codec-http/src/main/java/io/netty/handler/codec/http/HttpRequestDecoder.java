@@ -77,14 +77,15 @@ public class HttpRequestDecoder extends HttpObjectDecoder {
 
     @Override
     protected HttpMessage createMessage(String[] initialLine) throws Exception {
-        return new DefaultHttpRequest(
-                HttpVersion.valueOf(initialLine[2]),
-                HttpMethod.valueOf(initialLine[0]), initialLine[1], validateHeaders);
+        HttpVersion version = HttpVersion.valueOf(initialLine[2]);
+        HttpMethod method = HttpMethod.valueOf(initialLine[0]);
+        String uri = initialLine[1];
+        return factory().newHttpRequest(ctx, version, method, uri);
     }
 
     @Override
     protected HttpMessage createInvalidMessage() {
-        return new DefaultFullHttpRequest(HttpVersion.HTTP_1_0, HttpMethod.GET, "/bad-request", validateHeaders);
+        return factory().newHttpRequest(ctx, HttpVersion.HTTP_1_0, HttpMethod.GET, "/bad-request");
     }
 
     @Override

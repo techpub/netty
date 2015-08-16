@@ -20,7 +20,9 @@ import io.netty.handler.codec.TooLongFrameException;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.HttpMessage;
+import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpVersion;
 
 /**
  * Decodes {@link ByteBuf}s into RTSP requests represented in
@@ -73,13 +75,16 @@ public class RtspRequestDecoder extends RtspObjectDecoder {
 
     @Override
     protected HttpMessage createMessage(String[] initialLine) throws Exception {
-        return new DefaultHttpRequest(RtspVersions.valueOf(initialLine[2]),
-                RtspMethods.valueOf(initialLine[0]), initialLine[1], validateHeaders);
+        HttpVersion version = RtspVersions.valueOf(initialLine[2]);
+        HttpMethod foo = RtspMethods.valueOf(initialLine[0]);
+        String uri = initialLine[1];
+
+        return factory().newHttpRequest(ctx, version, foo, uri);
     }
 
     @Override
     protected HttpMessage createInvalidMessage() {
-        return new DefaultFullHttpRequest(RtspVersions.RTSP_1_0, RtspMethods.OPTIONS, "/bad-request", validateHeaders);
+        return factory().newHttpRequest(ctx, RtspVersions.RTSP_1_0, RtspMethods.OPTIONS, "/bad-request");
     }
 
     @Override
